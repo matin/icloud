@@ -1,5 +1,7 @@
 import json
+import time
 import urllib.request
+from urllib.parse import urlencode
 from urllib.request import Request
 
 from .utils import memoize
@@ -29,33 +31,63 @@ class iCloud(object):
             'extended_login': True,
             }
         data = bytes(json.dumps(params), 'utf-8')
-        req = Request(url, data=data, headers=HEADERS)
-        self.opener.open(req)
+        self.opener.open(Request(url, data=data, headers=HEADERS))
         auth_cookie = [cookie for cookie in self.cookiejar
                        if cookie.name == 'X-APPLE-WEBAUTH-TOKEN'][0]
         auth_cookie_dict = dict(item.split('=') for item
                                 in auth_cookie.value.split(':'))
         self.dsid = auth_cookie_dict['d']
 
+    def get(self, url):
+        resp = self.opener.open(Request(url, headers=HEADERS))
+        return json.loads(resp.read().decode('utf-8'))
+
     def get_node(self, node_id):
         url = ('https://p04-ubiquityws.icloud.com/ws/{dsid}/item/{node_id}?'
                'dsid={dsid}'.format(dsid=self.dsid, node_id=node_id))
-        req = Request(url, headers=HEADERS)
-        resp_body = self.opener.open(req).read()
-        return iCloudNode(self, **json.loads(resp_body.decode('utf-8')))
+        return iCloudNode(self, **self.get(url))
 
     def get_children(self, node_id):
         url = ('https://p04-ubiquityws.icloud.com/ws/{dsid}/parent/{node_id}?'
                'dsid={dsid}'.format(dsid=self.dsid, node_id=node_id))
-        req = Request(url, headers=HEADERS)
-        resp_body = self.opener.open(req).read()
-        items = json.loads(resp_body.decode('utf-8'))['item_list']
+        items = self.get(url)['item_list']
         return [iCloudNode(self, **item) for item in items]
 
     @property
     @memoize
     def root(self):
         return self.get_node(0)
+
+    def download_file(self, node, file_type):
+        if node.type != 'package':
+            raise Exception('Can not download type "{}"'.format(node.type))
+        
+        # Export document
+        query = urlencode({
+            'dsid': self.dsid,
+            'document_guid': node.item_id,
+            'document_type': file_type,  #TODO: Validate
+            'format': 'com.apple.iwork.pages.sffpages',
+            })
+        url = ('https://p04-ubiquityws.icloud.com/iw/export/{}/'
+               'export_document?'.format(self.dsid) + query)
+        job_id = self.get(url)['job_id']
+
+        # Check export status
+        params = urlencode({'job_id': job_id})
+        url = ('https://p04-ubiquityws.icloud.com/iw/export/{}/'
+               'check_export_status?'.format(self.dsid) + params)
+        while True:
+            job_status = self.get(url)['job_status']
+            if job_status == 'success':
+                break
+            time.sleep(1)
+
+        # Download exported document
+        params = urlencode({'job_id': job_id})
+        url = ('https://p04-ubiquityws.icloud.com/iw/export/{}/'
+               'download_exported_document?'.format(self.dsid) + params)
+        return self.opener.open(Request(url, headers=HEADERS)).read()
 
 
 class iCloudNode(object):
@@ -68,3 +100,11 @@ class iCloudNode(object):
     @memoize
     def children(self):
         return self.conn.get_children(self.item_id)
+
+    @memoize
+    def get_child_by_name(self, name):
+        return [child for child in self.children if child.name == name][0]
+
+
+    def download(self, file_type):
+        return self.conn.download_file(self, file_type)
