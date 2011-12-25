@@ -74,14 +74,16 @@ class iCloud(object):
         job_id = self.get(url)['job_id']
 
         # Check export status
+        # TODO: Throttle wait based on file size
         params = urlencode({'job_id': job_id})
         url = ('https://p04-ubiquityws.icloud.com/iw/export/{}/'
                'check_export_status?'.format(self.dsid) + params)
+        time.sleep(5)  # Give her some time
         while True:
             job_status = self.get(url)['job_status']
             if job_status == 'success':
                 break
-            time.sleep(1)
+            time.sleep(5)  # Don't be pushy!
 
         # Download exported document
         params = urlencode({'job_id': job_id})
